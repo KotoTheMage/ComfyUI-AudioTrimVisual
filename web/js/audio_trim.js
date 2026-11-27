@@ -639,7 +639,7 @@ function setupNode(node) {
         updateButtons();
     }
 
-    function play(range) {
+    function play(range, startAt) {
         if (!st.buffer || range[1] - range[0] <= 0.0005) return;
         stopPlayback();
         const ctx = getAudioCtx();

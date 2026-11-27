@@ -427,6 +427,7 @@ def run_integration_tests(pkg, stub, tmp, torch_mod):
         assert '{ kind: "seek" }' in js          # body click/drag moves the line
         assert "function seekTo" in js           # live jump while playing
         assert "st.playFrom" in js               # playback starts at the cue
+        assert "function play(range, startAt)" in js  # signature takes the cue
         assert "st.playing ? st.playhead : st.cue" in js  # idle marker drawn
         assert "play([st.selStart, st.selEnd], st.cue)" in js  # Trim button
     check("play-start marker: draggable line + playback start wired",
