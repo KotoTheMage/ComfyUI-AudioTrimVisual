@@ -11,8 +11,9 @@
  *    the node's standard start/end float fields (3-decimal floats)
  *  - zero-crossing snap (mirrors the Python algorithm, argmin |sample| ±20 ms)
  *  - wheel zoom, ruler drag to pan, double-click to fit
- *  - playback: Play Trim / Play Full / Stop / Loop with a moving playhead;
- *    click/drag the yellow line inside the trim area to set the play start
+ *  - playback: ▶ Play / ⏸ Pause / ■ Stop / Loop with a moving playhead;
+ *    the yellow line marks where ▶ Play starts (click/drag it inside the
+ *    trim area; pause keeps it at the paused position, stop rewinds it)
  *  - trimmed + total duration shown in seconds and milliseconds
  *
  * The visual block is a single DOM widget appended AFTER the node's native
@@ -162,9 +163,9 @@ function setupNode(node) {
   <div class="zat-status"></div>
 </div>
 <div class="zat-bar">
-  <button class="zat-btn" data-act="trim"  title="Play the trimmed region">▶ Trim</button>
-  <button class="zat-btn" data-act="full"  title="Play the whole file">▶ Full</button>
-  <button class="zat-btn" data-act="stop"  title="Stop playback">■ Stop</button>
+  <button class="zat-btn" data-act="trim"  title="Play from the yellow marker; resumes where pause left off">▶ Play</button>
+  <button class="zat-btn" data-act="full"  title="Pause — the yellow marker stays at the paused position">⏸ Pause</button>
+  <button class="zat-btn" data-act="stop"  title="Stop and rewind the marker to the trim start">■ Stop</button>
   <button class="zat-btn zat-loop" data-act="loop" title="Loop the trimmed region during playback">Loop: Off</button>
   <button class="zat-btn" data-act="fit"   title="Zoom so the whole file is visible">⤢ Fit</button>
 </div>
@@ -176,7 +177,7 @@ function setupNode(node) {
 <div class="zat-hint">
   waveform appears after the node runs &nbsp;·&nbsp; wheel = zoom
   &nbsp;·&nbsp; drag top ruler = pan &nbsp;·&nbsp; drag the two edge bars = trim
-  &nbsp;·&nbsp; click / drag the yellow line = play start &nbsp;·&nbsp;
+  &nbsp;·&nbsp; click / drag the yellow line = where ▶ Play starts &nbsp;·&nbsp;
   double-click = fit &nbsp;·&nbsp; typed values follow the
   "snap to zero crossing" toggle
 </div>`;
@@ -340,7 +341,7 @@ function setupNode(node) {
     function updateButtons() {
         const canPlay = !!st.buffer && st.selEnd - st.selStart > 0.0005;
         root.querySelector('[data-act="trim"]').disabled = !canPlay;
-        root.querySelector('[data-act="full"]').disabled = !st.buffer;
+        root.querySelector('[data-act="full"]').disabled = !st.playing;
         root.querySelector('[data-act="stop"]').disabled = !st.playing;
         loopBtn.textContent = st.loop ? "Loop: On" : "Loop: Off";
         loopBtn.classList.toggle("active", st.loop);
@@ -604,8 +605,10 @@ function setupNode(node) {
         ctx.save();
         ctx.setTransform(d, 0, 0, d, 0, 0);
         ctx.clearRect(0, 0, w, h);
-        // playing: the moving playhead; idle: the draggable play-start marker
-        const marker = st.playing ? st.playhead : st.cue;
+        // playing: the moving playhead; idle: the draggable play-start
+        // marker (defaults to the trim start until the user places it)
+        const marker = st.playing ? st.playhead
+            : (st.cue != null ? st.cue : st.selStart);
         if (marker != null) {
             const x = tToX(marker);
             if (x >= -2 && x <= w + 2) {
@@ -654,6 +657,7 @@ function setupNode(node) {
         const b = range[1];
         // start at the cue when one is set (clamped into the range)
         const from = startAt == null ? a : clamp(num(startAt), a, b);
+        if (b - from <= 0.0005) from = a; // paused at the very end -> replay
         if (st.loop) {
             src.loop = true;
             src.loopStart = a;
@@ -663,7 +667,10 @@ function setupNode(node) {
             src.start(0, from, b - from);
         }
         src.onended = () => {
-            if (st.playSrc === src) stopPlayback();
+            if (st.playSrc === src) {
+                st.cue = null; // played through: next Play starts at trim start
+                stopPlayback();
+            }
         };
         st.playSrc = src;
         st.playRange = [a, b];
@@ -760,6 +767,7 @@ function setupNode(node) {
         if (st.drag.kind === "start") {
             t = Math.min(t, q(st.selEnd - 0.001));
             st.selStart = Math.max(0, t);
+            st.cue = st.selStart; // next Play starts from the moved bracket
         } else {
             t = Math.max(t, q(st.selStart + 0.001));
             st.selEnd = Math.min(st.duration, t);
@@ -813,10 +821,22 @@ function setupNode(node) {
 
     // toolbar
     root.querySelector('[data-act="trim"]').addEventListener("click",
-        () => play([st.selStart, st.selEnd], st.cue));
+        () => {
+            if (st.playing) return; // running: Pause interrupts, Play no-ops
+            play([st.selStart, st.selEnd], st.cue);
+        });
     root.querySelector('[data-act="full"]').addEventListener("click",
-        () => play([0, st.duration], st.cue));
-    root.querySelector('[data-act="stop"]').addEventListener("click", stopPlayback);
+        () => {
+            // pause: keep the position — the yellow marker moves there and
+            // the next ▶ Play resumes from it
+            if (st.playing && st.playhead != null) st.cue = st.playhead;
+            stopPlayback();
+        });
+    root.querySelector('[data-act="stop"]').addEventListener("click",
+        () => {
+            st.cue = null; // rewind the marker to the trim start
+            stopPlayback();
+        });
     loopBtn.addEventListener("click", () => {
         st.loop = !st.loop;
         // restart trim playback with the new loop mode for instant feedback,

@@ -82,15 +82,20 @@ node you connect — it owns the filename prefix and the output format.
   fields. Typed values go through the same snapping as drags.
 - **Mouse wheel** — zoom around the cursor; **drag the top ruler** (or
   shift-drag / middle-drag anywhere) — pan; **double-click** — fit the whole file.
-- **Playback:** `▶ Trim` plays only the selection, `▶ Full` plays the whole
-  file, `■ Stop` stops, `Loop` repeats the selection (restarts playback with
-  loop applied), `⤢ Fit` resets the zoom. A moving playhead shows the position,
+- **Transport:** `▶ Play` plays the trimmed selection starting at the yellow
+  marker (resumes where a pause left off), `⏸ Pause` stops at the current
+  position — the marker stays there so the next Play resumes from it,
+  `■ Stop` rewinds the marker to the trim start, `Loop` repeats the
+  selection, `⤢ Fit` resets the zoom. A moving playhead shows the position,
   and the view follows it.
-- **Play-start marker (yellow line):** click or drag anywhere in the trim
-  area to place it — `▶ Trim` / `▶ Full` start playback there. Dragging while
-  playing jumps the running audio (release lands exactly on the line), the
-  Loop toggle keeps the current position, and the marker follows the
-  "snap to zero crossing" toggle and stays inside the trim area.
+- **Play-start marker (yellow line):** always visible at the position the
+  next `▶ Play` will use (defaults to the trim start). Click or drag
+  anywhere in the trim area to place it; **dragging the blue start bracket
+  moves the marker to the new bracket position**, so the next Play starts
+  from the moved bracket rather than a paused position. Dragging the marker
+  while playing jumps the running audio (release lands exactly on the line),
+  and it follows the "snap to zero crossing" toggle while staying inside the
+  trim area.
 - **Trim / Total readout** shows the duration in seconds (3 decimals) and
   integer milliseconds, plus sample rate and channel count.
 

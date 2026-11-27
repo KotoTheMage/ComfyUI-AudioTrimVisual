@@ -428,10 +428,21 @@ def run_integration_tests(pkg, stub, tmp, torch_mod):
         assert "function seekTo" in js           # live jump while playing
         assert "st.playFrom" in js               # playback starts at the cue
         assert "function play(range, startAt)" in js  # signature takes the cue
-        assert "st.playing ? st.playhead : st.cue" in js  # idle marker drawn
-        assert "play([st.selStart, st.selEnd], st.cue)" in js  # Trim button
+        assert "play([st.selStart, st.selEnd], st.cue)" in js  # Play button
     check("play-start marker: draggable line + playback start wired",
           t_playhead_cue_wired)
+
+    def t_transport_semantics():
+        js = (PKG_DIR / "web" / "js" / "audio_trim.js").read_text("utf-8")
+        assert "▶ Play</button>" in js and "⏸ Pause</button>" in js
+        assert "if (st.playing) return;" in js   # Play no-ops while running
+        assert "st.cue = st.playhead" in js      # pause keeps the position
+        assert "st.cue = st.selStart;" in js     # blue drag rewires play start
+        assert "st.cue = null; // rewind the marker" in js    # Stop button
+        assert "st.cue = null; // played through" in js       # natural end
+        assert "st.cue != null ? st.cue : st.selStart" in js  # marker visible
+        assert "if (b - from <= 0.0005) from = a;" in js  # paused-at-end replay
+    check("transport: Play/Pause/Stop semantics wired", t_transport_semantics)
 
     def t_input_types():
         it = node_cls.INPUT_TYPES()
