@@ -422,6 +422,16 @@ def run_integration_tests(pkg, stub, tmp, torch_mod):
         assert arr.shape[2] >= 1, arr.shape
     check("run(): out-of-range start is clamped", t_run_clamped_start)
 
+    def t_playhead_cue_wired():
+        js = (PKG_DIR / "web" / "js" / "audio_trim.js").read_text("utf-8")
+        assert '{ kind: "seek" }' in js          # body click/drag moves the line
+        assert "function seekTo" in js           # live jump while playing
+        assert "st.playFrom" in js               # playback starts at the cue
+        assert "st.playing ? st.playhead : st.cue" in js  # idle marker drawn
+        assert "play([st.selStart, st.selEnd], st.cue)" in js  # Trim button
+    check("play-start marker: draggable line + playback start wired",
+          t_playhead_cue_wired)
+
     def t_input_types():
         it = node_cls.INPUT_TYPES()
         audio_spec = it["required"]["audio"]

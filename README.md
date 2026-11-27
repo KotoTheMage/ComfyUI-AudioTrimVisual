@@ -86,6 +86,11 @@ node you connect — it owns the filename prefix and the output format.
   file, `■ Stop` stops, `Loop` repeats the selection (restarts playback with
   loop applied), `⤢ Fit` resets the zoom. A moving playhead shows the position,
   and the view follows it.
+- **Play-start marker (yellow line):** click or drag anywhere in the trim
+  area to place it — `▶ Trim` / `▶ Full` start playback there. Dragging while
+  playing jumps the running audio (release lands exactly on the line), the
+  Loop toggle keeps the current position, and the marker follows the
+  "snap to zero crossing" toggle and stays inside the trim area.
 - **Trim / Total readout** shows the duration in seconds (3 decimals) and
   integer milliseconds, plus sample rate and channel count.
 

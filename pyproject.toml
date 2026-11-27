@@ -1,7 +1,7 @@
 [project]
 name = "comfyui-audio-trim-visual"
 description = "Mid-pipe visual audio trimming node for ComfyUI: AUDIO socket in -> waveform timeline with drag handles, millisecond-precise numeric start/end fields, zero-crossing snap, playback with loop, dB gain -> AUDIO socket out. Persisting the trimmed audio is left to the connected Save Audio node."
-version = "1.3.0"
+version = "1.4.0"
 license = { text = "MIT" }
 requires-python = ">=3.10"
 

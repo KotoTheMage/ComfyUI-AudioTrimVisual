@@ -11,7 +11,8 @@
  *    the node's standard start/end float fields (3-decimal floats)
  *  - zero-crossing snap (mirrors the Python algorithm, argmin |sample| ±20 ms)
  *  - wheel zoom, ruler drag to pan, double-click to fit
- *  - playback: Play Trim / Play Full / Stop / Loop with a moving playhead
+ *  - playback: Play Trim / Play Full / Stop / Loop with a moving playhead;
+ *    click/drag the yellow line inside the trim area to set the play start
  *  - trimmed + total duration shown in seconds and milliseconds
  *
  * The visual block is a single DOM widget appended AFTER the node's native
@@ -144,7 +145,9 @@ function setupNode(node) {
         playRange: [0, 0],
         playLoop: false,
         playStartedAt: 0,
+        playFrom: 0,
         playhead: null,
+        cue: null,
         drag: null,
         dead: false,
     };
@@ -173,7 +176,8 @@ function setupNode(node) {
 <div class="zat-hint">
   waveform appears after the node runs &nbsp;·&nbsp; wheel = zoom
   &nbsp;·&nbsp; drag top ruler = pan &nbsp;·&nbsp; drag the two edge bars = trim
-  &nbsp;·&nbsp; double-click = fit &nbsp;·&nbsp; typed values follow the
+  &nbsp;·&nbsp; click / drag the yellow line = play start &nbsp;·&nbsp;
+  double-click = fit &nbsp;·&nbsp; typed values follow the
   "snap to zero crossing" toggle
 </div>`;
     const base = root.querySelector(".zat-base");
@@ -260,6 +264,7 @@ function setupNode(node) {
             // presets typed before the first run must survive to that run
             st.selStart = sRaw;
             st.selEnd = eRaw;
+            clampCue();
             updateInfo();
             drawBase();
             st.lastStart = sRaw;
@@ -274,6 +279,7 @@ function setupNode(node) {
         [a, b] = applySnapPair(a, b);
         st.selStart = a;
         st.selEnd = Math.min(st.duration, Math.max(a + 0.001, b));
+        clampCue(); // play-start marker follows the trim area
         // write snapped values back so the widgets and the saved file agree
         startW.value = q(a);
         endW.value = q(st.selEnd);
@@ -281,6 +287,32 @@ function setupNode(node) {
         drawBase();
         st.lastStart = num(startW.value);
         st.lastEnd = num(endW.value);
+    }
+
+    // --------------------------------------------- play-start marker (cue)
+    function clampCue() {
+        // the marker lives inside the current trim area
+        if (st.cue != null) st.cue = clamp(st.cue, st.selStart, st.selEnd);
+    }
+
+    function cueFromX(x) {
+        let t = q(clamp(xToT(x), 0, st.duration));
+        if (snapOn()) t = q(snapTime(t)); // same snap discipline as the cuts
+        return clamp(t, st.selStart, st.selEnd);
+    }
+
+    function seekTo(t) {
+        st.cue = t;
+        drawOverlay();
+        if (st.playing) {
+            // live-seek, throttled so a fast drag does not machine-gun the
+            // audio source; endDrag plays the exact release position
+            const now = performance.now();
+            if (!seekTo._last || now - seekTo._last > 80) {
+                seekTo._last = now;
+                play(st.playRange, t);
+            }
+        }
     }
 
     function updateInfo() {
@@ -367,6 +399,7 @@ function setupNode(node) {
             if (entry.hash && entry.hash !== st.srcHash) {
                 startW.value = 0;
                 endW.value = 0;
+                st.cue = null; // new file: play-start marker resets too
             }
             if (entry.hash) st.srcHash = entry.hash;
             setStatus("");
@@ -378,6 +411,7 @@ function setupNode(node) {
             if (token !== st.loadToken) return;
             st.buffer = null;
             st.mono = null;
+            st.cue = null;
             setStatus(`⚠ Could not load audio: ${err.message || err}`);
             drawBase();
             updateInfo();
@@ -570,8 +604,10 @@ function setupNode(node) {
         ctx.save();
         ctx.setTransform(d, 0, 0, d, 0, 0);
         ctx.clearRect(0, 0, w, h);
-        if (st.playhead != null) {
-            const x = tToX(st.playhead);
+        // playing: the moving playhead; idle: the draggable play-start marker
+        const marker = st.playing ? st.playhead : st.cue;
+        if (marker != null) {
+            const x = tToX(marker);
             if (x >= -2 && x <= w + 2) {
                 ctx.strokeStyle = COL.playhead;
                 ctx.fillStyle = COL.playhead;
@@ -616,13 +652,15 @@ function setupNode(node) {
         g.connect(ctx.destination);
         const a = range[0];
         const b = range[1];
+        // start at the cue when one is set (clamped into the range)
+        const from = startAt == null ? a : clamp(num(startAt), a, b);
         if (st.loop) {
             src.loop = true;
             src.loopStart = a;
             src.loopEnd = b;
-            src.start(0, a);
+            src.start(0, from);
         } else {
-            src.start(0, a, b - a);
+            src.start(0, from, b - from);
         }
         src.onended = () => {
             if (st.playSrc === src) stopPlayback();
@@ -630,6 +668,7 @@ function setupNode(node) {
         st.playSrc = src;
         st.playRange = [a, b];
         st.playLoop = !!src.loop;
+        st.playFrom = from;
         st.playStartedAt = ctx.currentTime;
         st.playing = true;
         updateButtons();
@@ -643,7 +682,9 @@ function setupNode(node) {
         const a = st.playRange[0];
         const b = st.playRange[1];
         const len = Math.max(0.001, b - a);
-        st.playhead = st.playLoop ? (a + (el % len)) : Math.min(b, a + el);
+        const off = st.playFrom - a; // playback may have started at the cue
+        st.playhead = st.playLoop ? (a + ((off + el) % len))
+            : Math.min(b, st.playFrom + el);
         // auto-follow the playhead when it leaves the current view
         const x = tToX(st.playhead);
         if (x < 0 || x > cssW()) {
@@ -685,7 +726,10 @@ function setupNode(node) {
             st.drag = { kind: "pan", startX: pos(e).x, vs: st.viewStart };
             over.style.cursor = "grabbing";
         } else {
-            return;
+            // body click/drag: move the yellow play-start line within the
+            // trim area (and jump a running playback to the new position)
+            st.drag = { kind: "seek" };
+            seekTo(cueFromX(x));
         }
         over.setPointerCapture(e.pointerId);
         e.preventDefault();
@@ -697,13 +741,17 @@ function setupNode(node) {
             if (st.buffer) {
                 const h = hitHandle(x);
                 over.style.cursor = h ? "ew-resize"
-                    : (pos(e).y <= RULER_H ? "grab" : "default");
+                    : (pos(e).y <= RULER_H ? "grab" : "pointer");
             }
             return;
         }
         if (st.drag.kind === "pan") {
             const dx = pos(e).x - st.drag.startX;
             setView(st.drag.vs - dx / pxPerSec(), st.viewSpan);
+            return;
+        }
+        if (st.drag.kind === "seek") {
+            seekTo(cueFromX(x));
             return;
         }
         // dragging a handle: quantize to ms, snap, clamp against the other edge
@@ -729,12 +777,15 @@ function setupNode(node) {
         st.drag = null;
         try { over.releasePointerCapture(e.pointerId); } catch (err) { /* noop */ }
         over.style.cursor = "default";
-        if (kind !== "pan" && st.buffer) {
+        if ((kind === "start" || kind === "end") && st.buffer) {
             // commit the final trim to the standard float widgets once; the
             // write triggers refreshSelection (snap is idempotent, so the
             // values stay exactly what the drag produced)
             startW.value = q(st.selStart);
             endW.value = q(st.selEnd);
+        }
+        if (kind === "seek" && st.playing) {
+            play(st.playRange, st.cue); // land the audio exactly at release
         }
         st.lastStart = num(startW.value);
         st.lastEnd = num(endW.value);
@@ -762,14 +813,15 @@ function setupNode(node) {
 
     // toolbar
     root.querySelector('[data-act="trim"]').addEventListener("click",
-        () => play([st.selStart, st.selEnd]));
+        () => play([st.selStart, st.selEnd], st.cue));
     root.querySelector('[data-act="full"]').addEventListener("click",
-        () => play([0, st.duration]));
+        () => play([0, st.duration], st.cue));
     root.querySelector('[data-act="stop"]').addEventListener("click", stopPlayback);
     loopBtn.addEventListener("click", () => {
         st.loop = !st.loop;
-        // restart trim playback with the new loop mode for instant feedback
-        if (st.playing) play([st.playRange[0], st.playRange[1]]);
+        // restart trim playback with the new loop mode for instant feedback,
+        // keeping the current position when one is already moving
+        if (st.playing) play(st.playRange, st.playhead);
         updateButtons();
     });
     root.querySelector('[data-act="fit"]').addEventListener("click", () => {
