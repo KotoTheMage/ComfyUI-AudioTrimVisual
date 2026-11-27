@@ -48,8 +48,10 @@ socket, and feed the right `AUDIO` output into Save Audio, Preview Audio, or
 anything else that accepts `AUDIO`. The node is an **output node**: even with
 nothing connected downstream it still runs (so the waveform stays available),
 and it reports the exact duration, cut points and clipping warning in its
-result area. Writing the trimmed result to disk is the job of the Save Audio
-node you connect — it owns the filename prefix and the output format.
+result area. To write the trimmed result to disk you can either press the
+**⬇ Save** button on the node (it saves the trimmed FLAC into ComfyUI's
+`output` folder, named from the `filename` field — no re-run needed) or
+connect a Save Audio node downstream.
 
 ### Sockets
 
@@ -66,6 +68,7 @@ node you connect — it owns the filename prefix and the output format.
 | `end (s)` | Cut end in seconds. **0 = end of file.** |
 | `gain (dB)` | Volume change applied to the trimmed region, −60…+24 dB, default 0. Samples that exceed full scale are hard-clipped (the UI warns you when that happens). |
 | `snap to zero crossing` | When on, every cut point (drag *and* typed values) is moved to the quietest sample (≈ zero crossing) within ±20 ms to avoid clicks. |
+| `filename` | Standard Save-node string: type it or connect any STRING node. Used by the **⬇ Save** button as the name in the output folder — `audio/abc` → `output/audio/abc_00001_.flac`, plain `abc` → `output/abc_00001_.flac` (subfolder handling just like native Save nodes). Default `trim` saves straight into `output/`. |
 
 ### Timeline interactions
 
@@ -86,8 +89,9 @@ node you connect — it owns the filename prefix and the output format.
   marker (resumes where a pause left off), `⏸ Pause` stops at the current
   position — the marker stays there so the next Play resumes from it,
   `■ Stop` rewinds the marker to the trim start, `Loop` repeats the
-  selection, `⤢ Fit` resets the zoom. A moving playhead shows the position,
-  and the view follows it.
+  selection. A moving playhead shows the position, and the view follows it.
+  Pressing `▶ Play` also clears the status line (e.g. a save confirmation)
+  so nothing covers the waveform.
 - **Play-start marker (yellow line):** always visible at the position the
   next `▶ Play` will use (defaults to the trim start). Click or drag
   anywhere in the trim area to place it; **dragging the blue start bracket
@@ -96,6 +100,18 @@ node you connect — it owns the filename prefix and the output format.
   while playing jumps the running audio (release lands exactly on the line),
   and it follows the "snap to zero crossing" toggle while staying inside the
   trim area.
+- **⬇ Save (FLAC into the output folder):** posts the current trim to the
+  node's small API route; the server trims the temp mirror of the last run
+  (the exact audio shown in the timeline) and writes a **FLAC (24-bit PCM)**
+  into ComfyUI's `output` folder — **no re-run of the upstream workflow, no
+  browser download folder**. The name comes from the standard `filename`
+  string field — typed values are read live at save time (widget and DOM
+  input), and when the field is connected to an upstream STRING node the
+  last queued value is used; the default `trim` (and any other plain name)
+  saves straight into `output/` while `audio/abc` →
+  `output/audio/abc_00001_.flac`, with the ComfyUI-style counter keeping
+  every save unique. Requires the node to have been queued at
+  least once (the Save button trims that run's mirror).
 - **Trim / Total readout** shows the duration in seconds (3 decimals) and
   integer milliseconds, plus sample rate and channel count.
 
@@ -118,11 +134,13 @@ Two things happen on every run:
 
 1. **AUDIO socket out** — the trimmed waveform `[batch, channels, frames]` +
    sample rate, ready for Save Audio / Preview Audio / any AUDIO input.
-   Connect Save Audio to write the result to disk: it owns the filename
-   prefix and the output format, so nothing is configured twice here.
+   Connect Save Audio to write the result to disk — or skip the re-run and
+   use the **⬇ Save** button on the UI, which saves the trimmed FLAC
+   straight into the output folder (named by the `filename` field).
 2. **UI mirror** — the untrimmed input is written to the temp folder as a
    float WAV so the timeline can display it. That mirror is internal only;
-   the node itself writes nothing into the output folder.
+   the only thing this node ever writes into the output folder is the FLAC
+   produced by the ⬇ Save button.
 
 The result text prints `trimmed X.XXXs (N ms) | cut A.BBBs to C.CCCs of
 T.TTTs @ rate | snap | gain`, plus a clipping warning when the gain pushed

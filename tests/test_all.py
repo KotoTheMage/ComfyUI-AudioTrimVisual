@@ -450,12 +450,15 @@ def run_integration_tests(pkg, stub, tmp, torch_mod):
         assert tuple(audio_spec) == ("AUDIO",), audio_spec  # socket, not combo
         assert set(it["required"].keys()) == {
             "audio", "start_seconds", "end_seconds", "gain_db",
-            "snap_to_zero_crossing"}, sorted(it["required"].keys())
+            "snap_to_zero_crossing", "filename"}, sorted(it["required"].keys())
+        fn = it["required"]["filename"]
+        assert fn[0] == "STRING" and fn[1]["default"] == "trim", fn
+        assert fn[1]["multiline"] is False, fn
         assert it["required"]["start_seconds"][1]["step"] == 0.001
         assert it["required"]["gain_db"][1]["default"] == 0.0
         assert node_cls.RETURN_TYPES == ("AUDIO",), node_cls.RETURN_TYPES
         assert node_cls.OUTPUT_NODE is True
-    check("INPUT_TYPES: AUDIO socket in/out, no save-format/prefix widgets",
+    check("INPUT_TYPES: AUDIO socket in/out, trim widgets + filename field",
           t_input_types)
 
     def t_fingerprint_wired():
@@ -466,6 +469,80 @@ def run_integration_tests(pkg, stub, tmp, torch_mod):
         assert "serializeValue = () => st.srcHash" in js  # workflow persistence
     check("same-file trim persistence wired backend <-> frontend",
           t_fingerprint_wired)
+
+    def t_save_wired():
+        js = (PKG_DIR / "web" / "js" / "audio_trim.js").read_text("utf-8")
+        assert "function saveTrimmed" in js
+        assert '"/audio_trim_visual/save"' in js       # POSTs to the API route
+        assert "st.mirrorFile" in js                   # trims the last mirror
+        assert 'data-act="save"' in js and "⬇ Save</button>" in js
+        assert '"audio/wav"' not in js                 # no client WAV encoder
+        assert 'data-act="fit"' not in js and "⤢ Fit" not in js  # button gone
+        assert 'function filenamePrefix' in js         # resolved at save time
+        assert 'inputEl' in js                         # live DOM text picked up
+        assert "zat_prefix" in js and "lastPrefix" in js  # connected fallback
+        assert '"audio/trim"' not in js                # default saves to /output
+        assert 'setStatus(""); // clear save/load messages' in js  # Play clears
+        assert "zat-hint" not in js  # tips div removed; canvas shows the hint
+        py = (PKG_DIR / "nodes.py").read_text(encoding="utf-8")
+        assert '"filename": ("STRING"' in py           # connectable on backend
+        au = (PKG_DIR / "audio_utils.py").read_text(encoding="utf-8")
+        assert "def save_trimmed_flac" in au and 'format="FLAC"' in au
+        ini = (PKG_DIR / "__init__.py").read_text(encoding="utf-8")
+        assert "/audio_trim_visual/save" in ini        # route registered
+    check("direct save: FLAC into output folder wired, Fit removed",
+          t_save_wired)
+
+    def t_flac_save_roundtrip():
+        try:
+            import soundfile as sf
+        except Exception:
+            print("      (soundfile unavailable — FLAC roundtrip skipped)")
+            return
+        au = pkg.audio_utils
+        root = Path(tempfile.mkdtemp())
+        temp_dir = root / "temp"
+        out_dir = root / "output"
+        temp_dir.mkdir()
+        out_dir.mkdir()
+        # constant-level stereo mirror (like the backend's temp WAV)
+        sr = 22050
+        wav = np.full((sr, 2), 0.25, dtype=np.float32)  # 1.0 s
+        sf.write(temp_dir / "zat_full_abc123.wav", wav, sr,
+                 format="WAV", subtype="FLOAT")
+        info = au.save_trimmed_flac("zat_full_abc123.wav", temp_dir, out_dir,
+                                    0.1, 0.4, 6.0, "audio/trim")
+        assert info["name"] == "trim_00001_.flac", info
+        assert info["subfolder"] == "audio" and info["channels"] == 2, info
+        fpath = out_dir / "audio" / "trim_00001_.flac"
+        assert fpath.is_file() and fpath.stat().st_size > 100
+        data, flac_sr = sf.read(fpath, dtype="float32", always_2d=True)
+        assert flac_sr == sr, flac_sr
+        assert data.shape[0] == 6615, data.shape  # round(0.4*sr)-round(0.1*sr)
+        gain = 10.0 ** (6.0 / 20.0)
+        assert abs(float(np.mean(data)) - 0.25 * gain) < 1e-3, float(np.mean(data))
+        # ComfyUI-style counter keeps every save unique per base name
+        info2 = au.save_trimmed_flac("zat_full_abc123.wav", temp_dir, out_dir,
+                                     0.0, 0.0, 0.0, "audio/trim")
+        assert info2["name"] == "trim_00002_.flac", info2
+        # filename-prefix routing, exactly like native Save nodes:
+        # "audio/abc" -> output/audio/, plain "abc" -> output/ root
+        au.save_trimmed_flac("zat_full_abc123.wav", temp_dir, out_dir,
+                             0.0, 0.2, 0.0, "audio/abc")
+        assert (out_dir / "audio" / "abc_00001_.flac").is_file()
+        info_b = au.save_trimmed_flac("zat_full_abc123.wav", temp_dir,
+                                      out_dir, 0.0, 0.2, 0.0, "abc")
+        assert info_b["subfolder"] == "", info_b
+        assert (out_dir / "abc_00001_.flac").is_file(), info_b
+        # path traversal / foreign mirror names are rejected
+        for bad in ("../evil", "zat_full_../x.wav", "other.wav"):
+            try:
+                au.save_trimmed_flac(bad, temp_dir, out_dir, 0.0, 0.5, 0.0, "t")
+                raise AssertionError(f"accepted bad mirror name {bad!r}")
+            except (ValueError, RuntimeError):
+                pass
+    check("direct save: FLAC roundtrip into output (trim+gain+counter+guard)",
+          t_flac_save_roundtrip)
 
 
 def main():

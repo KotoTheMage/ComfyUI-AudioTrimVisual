@@ -5,9 +5,12 @@ on the left (connect Load Audio, Generate Audio, TTS, ...) and an AUDIO socket
 output on the right (connect Save Audio, Preview Audio, ...). The node trims
 the incoming waveform to [start_seconds, end_seconds] (optionally snapped to
 zero crossings), applies a dB gain and passes the trimmed AUDIO through the
-output socket unchanged in format. Persisting the result is the job of the
-node connected downstream (Save Audio owns the filename prefix and the
-output format); this node only mirrors the untrimmed input to the temp folder
+output socket unchanged in format. The trimmed audio can be persisted two
+ways: the ⬇ Save button on the node UI asks the package's small API route
+to trim the temp mirror of the last run and write a FLAC into ComfyUI's
+output folder (name from the standard filename field — no re-run needed),
+or a Save Audio node downstream writes the socket output.
+This node also mirrors the untrimmed input to the temp folder
 so the frontend timeline can display the full waveform after every run.
 
 The AUDIO socket format is the one used by all core audio nodes:
@@ -51,9 +54,10 @@ class AudioTrimVisual:
         "handles or type exact start/end values (seconds or milliseconds), "
         "optionally snap cuts to zero crossings, preview with playback, apply "
         "a dB gain. end_seconds = 0 means 'end of file'. The trimmed audio "
-        "goes to the output socket; connect Save Audio to write it to disk "
-        "(it owns the filename prefix and the output format). Queue the node "
-        "once to display the waveform."
+        "goes to the output socket; the ⬇ Save button on the UI writes "
+        "the trimmed FLAC straight into ComfyUI's output folder (standard "
+        "filename field, no re-run needed), or connect Save Audio "
+        "downstream. Queue the node once to display the waveform."
     )
 
     @classmethod
@@ -74,6 +78,11 @@ class AudioTrimVisual:
                     "default": 0.0, "min": -60.0, "max": 24.0, "step": 0.1,
                 }),
                 "snap_to_zero_crossing": ("BOOLEAN", {"default": True}),
+                # standard Save-node field: type it or connect a STRING node;
+                # the ⬇ Save button on the UI uses it as the name in the
+                # output folder — the plain default lands directly in output/
+                "filename": ("STRING", {"default": "trim",
+                                        "multiline": False}),
             },
         }
 
@@ -101,7 +110,13 @@ class AudioTrimVisual:
 
     # ------------------------------------------------------------------- run
     def run(self, audio, start_seconds, end_seconds, gain_db,
-            snap_to_zero_crossing):
+            snap_to_zero_crossing, filename="trim"):
+        # filename: not used for trimming — the ⬇ Save button on the UI POSTs
+        # the trim to the package's /audio_trim_visual/save route, which
+        # trims this node's temp mirror and writes a FLAC into the output
+        # folder. The resolved name (typed, or the connected STRING's value)
+        # is passed back to the UI via ui.zat_prefix so ⬇ Save can use it
+        # too; the socket stays file-free
         if not isinstance(audio, dict) or "waveform" not in audio:
             raise ValueError(
                 "'audio' must be a core AUDIO dict (waveform + sample_rate). "
@@ -168,7 +183,7 @@ class AudioTrimVisual:
         if clipped > 0.0:
             msg += f" | WARNING: {clipped * 100:.2f}% of samples clipped by gain"
 
-        ui = {"text": [msg]}
+        ui = {"text": [msg], "zat_prefix": [str(filename)]}
         if full_entry is not None:
             ui["zat_full"] = [full_entry]
         return {"ui": ui, "result": (audio_out,)}

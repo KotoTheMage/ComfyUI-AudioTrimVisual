@@ -71,7 +71,6 @@ function injectStyle() {
 .zat-info { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 5px;
     font-size: 11px; color: #8fa3bf; }
 .zat-info .zat-warn { color: #ffb347; }
-.zat-hint { margin-top: 4px; font-size: 10px; color: #5d6c80; line-height: 1.4; }
 `;
     document.head.appendChild(st);
 }
@@ -137,6 +136,8 @@ function setupNode(node) {
         colsKey: "",
         loadToken: 0,
         srcHash: null,
+        mirrorFile: null,
+        lastPrefix: null,
         lastStart: NaN,
         lastEnd: NaN,
         lastGain: NaN,
@@ -167,19 +168,12 @@ function setupNode(node) {
   <button class="zat-btn" data-act="full"  title="Pause — the yellow marker stays at the paused position">⏸ Pause</button>
   <button class="zat-btn" data-act="stop"  title="Stop and rewind the marker to the trim start">■ Stop</button>
   <button class="zat-btn zat-loop" data-act="loop" title="Loop the trimmed region during playback">Loop: Off</button>
-  <button class="zat-btn" data-act="fit"   title="Zoom so the whole file is visible">⤢ Fit</button>
+  <button class="zat-btn" data-act="save"  title="Save the trimmed audio as FLAC into ComfyUI's output folder — uses the filename field, no re-run needed">⬇ Save</button>
 </div>
 <div class="zat-info">
   <span class="zat-dur"></span>
   <span class="zat-meta"></span>
   <span class="zat-warn"></span>
-</div>
-<div class="zat-hint">
-  waveform appears after the node runs &nbsp;·&nbsp; wheel = zoom
-  &nbsp;·&nbsp; drag top ruler = pan &nbsp;·&nbsp; drag the two edge bars = trim
-  &nbsp;·&nbsp; click / drag the yellow line = where ▶ Play starts &nbsp;·&nbsp;
-  double-click = fit &nbsp;·&nbsp; typed values follow the
-  "snap to zero crossing" toggle
 </div>`;
     const base = root.querySelector(".zat-base");
     const over = root.querySelector(".zat-over");
@@ -316,6 +310,73 @@ function setupNode(node) {
         }
     }
 
+    // -------------------------------------------------------- direct save
+    // The ⬇ Save button POSTs the current trim to the package's small API
+    // route; the server trims the temp mirror of the last run (the exact
+    // audio shown here) and writes a FLAC into ComfyUI's output folder —
+    // no re-run of the upstream workflow, no browser download folder.
+    // The filename widget is resolved at save time, not cached: typed text
+    // the frontend has not committed to the widget (or a re-created widget)
+    // must still be picked up, so the live DOM input is consulted too.
+    // Priority: typed value -> the server-resolved name of the last run
+    // (ui.zat_prefix, used when the field is connected to an upstream
+    // STRING) -> "trim", which saves straight into /output like any other
+    // Save node.
+    function filenamePrefix() {
+        const connected = (node.inputs || []).some(
+            (i) => i && i.name === "filename" && i.link != null);
+        if (!connected) {
+            const w = (node.widgets || []).find(
+                (x) => x && x.name === "filename");
+            const cands = [
+                w && typeof w.value === "string" ? w.value : "",
+                w && w.inputEl && typeof w.inputEl.value === "string"
+                    ? w.inputEl.value : "",
+                w && w.element && typeof w.element.value === "string"
+                    ? w.element.value : "",
+            ];
+            for (const c of cands) {
+                if (c && c.trim()) return c;
+            }
+        }
+        return st.lastPrefix || "trim";
+    }
+
+    async function saveTrimmed() {
+        if (!st.buffer || !st.mirrorFile) return;
+        if (saveTrimmed._busy) return; // one in-flight POST at a time
+        saveTrimmed._busy = true;
+        try {
+            const res = await fetch("/audio_trim_visual/save", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    mirror: st.mirrorFile,
+                    start: st.selStart,
+                    end: st.selEnd,
+                    gain_db: num(gainW.value),
+                    filename_prefix: filenamePrefix(),
+                }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok || !data.ok) {
+                setStatus(`⚠ save failed: ${data.error || `HTTP ${res.status}`}`);
+                return;
+            }
+            const where = data.subfolder ? `output/${data.subfolder}/`
+                : "output/";
+            const clip = data.clipped_pct > 0
+                ? `, ${data.clipped_pct}% clipped` : "";
+            setStatus(`⬇ ${data.name} → ${where}` +
+                ` (${data.seconds} s @ ${data.sample_rate} Hz, ` +
+                `${data.channels === 1 ? "mono" : data.channels + " ch"} FLAC${clip})`);
+        } catch (err) {
+            setStatus(`⚠ save failed: ${err.message || err}`);
+        } finally {
+            saveTrimmed._busy = false;
+        }
+    }
+
     function updateInfo() {
         const len = st.selEnd - st.selStart;
         durEl.textContent = st.buffer
@@ -343,6 +404,7 @@ function setupNode(node) {
         root.querySelector('[data-act="trim"]').disabled = !canPlay;
         root.querySelector('[data-act="full"]').disabled = !st.playing;
         root.querySelector('[data-act="stop"]').disabled = !st.playing;
+        root.querySelector('[data-act="save"]').disabled = !st.buffer;
         loopBtn.textContent = st.loop ? "Loop: On" : "Loop: Off";
         loopBtn.classList.toggle("active", st.loop);
     }
@@ -372,6 +434,7 @@ function setupNode(node) {
             const buf = await getAudioCtx().decodeAudioData(arr);
             if (token !== st.loadToken || st.dead) return; // stale load
             st.buffer = buf;
+            st.mirrorFile = filename; // for the server-side ⬇ Save (FLAC)
             st.rate = buf.sampleRate;
             st.channels = buf.numberOfChannels;
             st.duration = buf.duration;
@@ -412,6 +475,7 @@ function setupNode(node) {
             if (token !== st.loadToken) return;
             st.buffer = null;
             st.mono = null;
+            st.mirrorFile = null;
             st.cue = null;
             setStatus(`⚠ Could not load audio: ${err.message || err}`);
             drawBase();
@@ -426,6 +490,8 @@ function setupNode(node) {
         if (st.dead) return;
         const d = e.detail || {};
         if (String(d.node ?? "") !== String(node.id)) return;
+        const pfx = d.output?.zat_prefix?.[0];
+        if (typeof pfx === "string" && pfx) st.lastPrefix = pfx;
         const full = d.output?.zat_full?.[0];
         if (full && full.filename) loadAudioFromEntry(full);
     };
@@ -822,6 +888,7 @@ function setupNode(node) {
     // toolbar
     root.querySelector('[data-act="trim"]').addEventListener("click",
         () => {
+            setStatus(""); // clear save/load messages: the waveform shows again
             if (st.playing) return; // running: Pause interrupts, Play no-ops
             play([st.selStart, st.selEnd], st.cue);
         });
@@ -844,9 +911,7 @@ function setupNode(node) {
         if (st.playing) play(st.playRange, st.playhead);
         updateButtons();
     });
-    root.querySelector('[data-act="fit"]').addEventListener("click", () => {
-        if (st.buffer) fitView();
-    });
+    root.querySelector('[data-act="save"]').addEventListener("click", saveTrimmed);
 
     // ------------------------------------------------- widget sync plumbing
     const wrap = (w, fn) => {

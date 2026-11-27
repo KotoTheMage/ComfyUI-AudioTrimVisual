@@ -6,8 +6,17 @@ nominal range -1.0 .. 1.0) and integer sample indices.
 """
 
 import hashlib
+import os
+import re
 
 import numpy as np
+
+try:
+    import soundfile as sf
+    _HAS_SF = True
+except Exception:  # soundfile ships with ComfyUI; tests may stub it
+    sf = None
+    _HAS_SF = False
 
 # Search window (seconds) when snapping a cut point to a zero crossing.
 # The frontend uses the identical value so the preview and the saved file agree.
@@ -122,3 +131,68 @@ def audio_fingerprint(waveform, sample_rate):
     h = hashlib.blake2b(wf.tobytes(), digest_size=16)
     h.update(int(sample_rate).to_bytes(8, "little", signed=True))
     return h.hexdigest()
+
+
+def sanitize_prefix(prefix):
+    """Save-node filename string -> (subfolder, base) for the output folder.
+
+    Keeps '/' subfolder support (output/<sub>/<base>_00001_.flac) while
+    refusing traversal: '', '.' and '..' segments are dropped, and the base
+    keeps only filename-safe characters. A typed .wav/.flac extension is
+    stripped (the node appends .flac itself).
+    """
+    prefix = str(prefix or "").strip().replace("\\", "/")
+    parts = [p for p in prefix.split("/") if p not in ("", ".", "..")]
+    sub = "/".join(parts[:-1])
+    base = parts[-1] if parts else "trim"
+    base = re.sub(r"\.(wav|flac)$", "", base, flags=re.IGNORECASE)
+    base = re.sub(r"[^\w\-. ]+", "_", base).strip() or "trim"
+    return sub, base
+
+
+def save_trimmed_flac(mirror_name, temp_dir, output_dir, start_s, end_s,
+                      gain_db, prefix):
+    """Trim the temp mirror of the last run and write a FLAC into output_dir.
+
+    The UI POSTs its ALREADY-snapped cut values, so no re-snap happens here:
+    the saved cut matches the timeline exactly. Gain and clipping use the
+    same apply_gain() as the AUDIO output socket. Returns a status dict
+    {name, subfolder, seconds, sample_rate, channels, clipped_pct}.
+    """
+    if not _HAS_SF:
+        raise RuntimeError("soundfile is required for the FLAC export.")
+    name = os.path.basename(str(mirror_name or ""))
+    if not (name.startswith("zat_full_") and name.endswith(".wav")):
+        raise ValueError("unknown audio mirror — queue the node once first.")
+    mirror = os.path.join(temp_dir, name)
+    if not os.path.isfile(mirror):
+        raise RuntimeError(
+            "the temp audio mirror is gone (temp was cleared?) — queue the "
+            "node once more, then press Save again.")
+    data, sr = sf.read(mirror, dtype="float32", always_2d=True)  # [N, C]
+    data = np.ascontiguousarray(data.T)                          # [C, N]
+    n = int(data.shape[1])
+    s_idx, e_idx = compute_trim_indices(n, sr, start_s, end_s)
+    trimmed, clipped = apply_gain(
+        np.ascontiguousarray(data[:, s_idx:e_idx]), gain_db)
+    sub, base = sanitize_prefix(prefix)
+    full_dir = os.path.join(output_dir, sub) if sub else output_dir
+    os.makedirs(full_dir, exist_ok=True)
+    # ComfyUI-style unique name: <base>_00001_.flac, counter per base
+    counter = 1
+    pat = re.compile(re.escape(base) + r"_(\d{5})_\.flac$")
+    for fn in os.listdir(full_dir):
+        m = pat.match(fn)
+        if m:
+            counter = max(counter, int(m.group(1)) + 1)
+    fname = f"{base}_{counter:05}_.flac"
+    sf.write(os.path.join(full_dir, fname), trimmed.T, sr,
+             format="FLAC", subtype="PCM_24")
+    return {
+        "name": fname,
+        "subfolder": sub,
+        "seconds": round(duration_seconds(s_idx, e_idx, sr), 3),
+        "sample_rate": int(sr),
+        "channels": int(trimmed.shape[0]),
+        "clipped_pct": round(clipped * 100.0, 2),
+    }
